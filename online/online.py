@@ -8,35 +8,22 @@ import math
 # ================== Args & Setup ==================
 parser = argparse.ArgumentParser()
 parser.add_argument("--file", default="hongloumeng.txt")
-parser.add_argument("--time", type=float, default=60.0) # Total training time
-parser.add_argument("--interval", type=float, default=1.0) # Print every X minutes
+parser.add_argument("--time", type=float, default=5.0, help="Training time in minutes")
+parser.add_argument("--lr", type=float, default=5e-4)
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-# ================== Data Handling ==================
-with open(args.file, "r", encoding="utf-8") as f:
-    text = f.read()
+# ================== Pure Stream Data ==================
+try:
+    with open(args.file, "rb") as f:
+        raw_bytes = f.read()
+except FileNotFoundError:
+    # Fallback if file is missing
+    raw_bytes = "黛玉正在窗外听着，听见宝玉说这话，不觉又喜又惊。".encode('utf-8')
 
-chars = sorted(list(set(text)))
-vocab_size = len(chars)
-stoi = {ch: i for i, ch in enumerate(chars)}
-itos = {i: ch for i, ch in enumerate(chars)}
-data = torch.tensor([stoi[ch] for ch in text if ch in stoi], dtype=torch.long).to(device)
-
-seq_len = 64
-batch_size = 64 # Parallel learning for speed
-
-def get_parallel_batch(step):
-    """ Reads 64 different sections of the book simultaneously """
-    # Each batch element starts at a different offset in the book
-    chunk_size = len(data) // batch_size
-    offsets = [i * chunk_size + (step % chunk_size) for i in range(batch_size)]
-    
-    # Ensure we don't overflow the text
-    x = torch.stack([data[o : o + seq_len] for o in offsets if o + seq_len + 1 < len(data)])
-    y = torch.stack([data[o + 1 : o + seq_len + 1] for o in offsets if o + seq_len + 1 < len(data)])
-    return x, y
+data = torch.ByteTensor(list(raw_bytes)).to(device).long()
+HORIZON = 128 
 
 # ================== Geometric Engine ==================
 
@@ -72,14 +59,15 @@ class ManifoldAttention(nn.Module):
         attn = F.softmax(dist, dim=-1)
         return self.proj(attn @ v)
 
-class PanGeometricModel(nn.Module):
-    def __init__(self, vocab, d=256):
+class PureSignalModel(nn.Module):
+    def __init__(self, d=256):
         super().__init__()
-        self.embed = nn.Embedding(vocab, d)
-        self.register_buffer("mask", torch.tril(torch.ones(seq_len, seq_len)))
+        self.embed = nn.Embedding(256, d)
+        self.register_buffer("mask", torch.tril(torch.ones(HORIZON, HORIZON)))
         self.attn = ManifoldAttention(d)
         self.flow = GeometricFlow(d)
-        self.head = nn.Linear(d, vocab, bias=False)
+        self.head = nn.Linear(d, 256, bias=False)
+
         for p in self.parameters():
             if p.dim() > 1: nn.init.orthogonal_(p)
 
@@ -94,59 +82,84 @@ class PanGeometricModel(nn.Module):
         x = x + self.flow(x)
         return self.head(x)
 
-# ================== Prediction Logic ==================
+# ================== Prediction/Interaction Logic ==================
 
 @torch.no_grad()
-def generate(model):
+def generate_signal(model, input_text=None, length=60):
     model.eval()
-    # Always start with '黛玉' for consistency
-    prompt = "黛玉"
-    idx = torch.tensor([stoi[c] for c in prompt], device=device).unsqueeze(0)
-    for _ in range(60):
-        logits = model(idx[:, -seq_len:])[:, -1, :]
-        probs = F.softmax(logits / 0.7, dim=-1)
+    if input_text:
+        input_bytes = list(input_text.encode('utf-8'))
+        idx = torch.tensor(input_bytes, dtype=torch.long, device=device).unsqueeze(0)
+    else:
+        # Random starting byte if no input
+        idx = torch.randint(0, 256, (1, 1), device=device)
+    
+    # Ensure window isn't too large
+    if idx.size(1) > HORIZON: idx = idx[:, -HORIZON:]
+        
+    output = []
+    for _ in range(length):
+        logits = model(idx[:, -HORIZON:])[:, -1, :]
+        probs = F.softmax(logits / 0.8, dim=-1)
         nxt = torch.multinomial(probs, 1)
         idx = torch.cat([idx, nxt], dim=1)
+        output.append(nxt.item())
+    
     model.train()
-    return "".join([itos[i.item()] for i in idx[0]])
+    return bytes(output).decode('utf-8', errors='ignore')
 
-# ================== Main Loop ==================
+# ================== Execution ==================
 
 def run():
-    print(f"--- Timed Geometric Engine ---")
-    model = PanGeometricModel(vocab_size).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    model = PureSignalModel().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     
     start_time = time.time()
-    last_print_time = start_time
+    last_peek = start_time
+    pointer = 0
     step = 0
     
+    print(f"--- [PHASE 1] Online Stream Training: {args.time} Minutes ---")
+    print(f"Prediction Interval: 10 Seconds\n")
+    
     while (time.time() - start_time) / 60 < args.time:
-        x, y = get_parallel_batch(step)
-        if x.shape[0] < batch_size: # End of text safety
-            step = 0
-            continue
-            
+        if pointer + HORIZON + 1 >= len(data):
+            pointer = 0
+        
+        x = data[pointer : pointer + HORIZON].unsqueeze(0)
+        y = data[pointer + 1 : pointer + HORIZON + 1].unsqueeze(0)
+        
         logits = model(x)
-        loss = F.cross_entropy(logits.view(-1, vocab_size), y.view(-1))
+        loss = F.cross_entropy(logits.view(-1, 256), y.view(-1))
         
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         
-        # Check if 1 minute has passed
+        # MONITOR EVERY 10 SECONDS
         current_time = time.time()
-        if (current_time - last_print_time) / 60 >= args.interval:
+        if (current_time - last_peek) >= 10:
             elapsed = (current_time - start_time) / 60
-            print(f"\n[Minute {elapsed:.1f}] Loss: {loss.item():.4f} | Total Steps: {step}")
-            print(f"PREDICTION: {generate(model)}")
-            print("-" * 50)
-            last_print_time = current_time
+            print(f"[{elapsed:.2f}m] Loss: {loss.item():.4f} | Pointer: {pointer}")
+            print(f"SIGNAL SNAPSHOT: {generate_signal(model)}")
+            print("-" * 30)
+            last_peek = current_time
             
+        pointer += 1
         step += 1
 
-    print(f"Training Complete.")
+    print("\n--- [PHASE 2] Interaction Mode ---")
+    print("Type a sentence to see how the model responds (type 'exit' to stop).")
+    
+    while True:
+        prompt = input("\nPrompt >> ")
+        if prompt.lower() == 'exit': break
+        try:
+            response = generate_signal(model, input_text=prompt, length=150)
+            print(f"Engine Response: {response}")
+        except Exception as e:
+            print(f"Signal Error: {e}")
 
 if __name__ == "__main__":
     run()
