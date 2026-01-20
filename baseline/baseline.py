@@ -1,25 +1,32 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import time, os, math, sys, argparse
+import math, time, os, argparse, sys
+
+try:
+    import psutil
+    HAS_PSUTIL = True
+    process = psutil.Process(os.getpid())
+except:
+    HAS_PSUTIL = False
 
 # ================== Args ==================
 parser = argparse.ArgumentParser()
 parser.add_argument("--file", default="hongloumeng.txt")
 parser.add_argument("--prompt", default="黛玉")
-parser.add_argument("--steps", type=int, default=20)
-parser.add_argument("--layers", type=int, default=8) # Set to 8 to test deeper manifold logic
-parser.add_argument("--dim", type=int, default=128)
+parser.add_argument("--steps", type=int, default=30) 
+parser.add_argument("--cells", type=int, default=6) 
 args = parser.parse_args()
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = 'cpu'
 
 # ================== Data ==================
-if not os.path.exists(args.file):
-    text = "黛玉轻倚窗前，神思恍惚。宝玉忙赶来问候。" * 1000
-else:
+try:
     with open(args.file, "r", encoding="utf-8") as f:
         text = f.read()
+except FileNotFoundError:
+    print(f"Error: {args.file} not found.")
+    sys.exit()
 
 chars = sorted(list(set(text)))
 vocab_size = len(chars)
@@ -27,8 +34,7 @@ stoi = {ch:i for i,ch in enumerate(chars)}
 itos = {i:ch for i,ch in enumerate(chars)}
 data = torch.tensor([stoi[ch] for ch in text if ch in stoi], dtype=torch.long, device=device)
 
-seq_len = 64
-batch_size = 32
+seq_len, batch_size = 32, 2 
 
 def get_batch():
     idx = torch.randint(0, len(data)-seq_len-1, (batch_size,))
@@ -36,148 +42,148 @@ def get_batch():
     y = torch.stack([data[i+1:i+seq_len+1] for i in idx])
     return x, y
 
-# ================== Theory: Gated Manifold Blocks ==================
+def calculate_entropy(logits):
+    probs = F.softmax(logits, dim=-1)
+    return -torch.sum(probs * torch.log(probs + 1e-9), dim=-1).mean()
 
-class ManifoldAttention(nn.Module):
-    def __init__(self, d, heads=8):
+# ================== Architectures ==================
+
+class ResonantManifold(nn.Module):
+    def __init__(self, d, cells_count):
         super().__init__()
-        self.heads = heads
-        self.d_k = d // heads
-        self.qkv = nn.Linear(d, 3*d, bias=False)
-        self.proj = nn.Linear(d, d, bias=False)
-    def forward(self, x, mask):
-        B, T, C = x.shape
-        qkv = self.qkv(x).view(B, T, 3, self.heads, self.d_k).permute(2, 0, 3, 1, 4)
-        q, k, v = qkv[0], qkv[1], qkv[2]
-        scores = (q @ k.transpose(-2, -1)) * (self.d_k ** -0.5)
-        scores = scores.masked_fill(mask[:T, :T] == 0, float('-inf'))
-        attn = F.softmax(scores, dim=-1)
-        out = (attn @ v).transpose(1, 2).reshape(B, T, C)
-        return self.proj(out)
+        self.d = d
+        self.cells_count = cells_count
+        self.inhibit = nn.Parameter(torch.randn(cells_count, cells_count) * 0.01)
+        self.phases = nn.Parameter(torch.linspace(0, 2*math.pi, cells_count))
+        self.ambition = nn.Parameter(torch.ones(cells_count, 1) * 0.1)
 
-class GeometricBlock(nn.Module):
-    """The 'Cell Population' Theory."""
-    def __init__(self, d):
+    def forward(self, x, m, gate, B, T):
+        nx = F.layer_norm(x, (self.d,))
+        qkv = nx @ gate 
+        att = (qkv @ qkv.transpose(-2, -1)) * (self.d**-0.5)
+        att = att.masked_fill(m, float('-inf'))
+        x = x + (F.softmax(att, dim=-1) @ qkv)
+        
+        sync_view = x.view(B, self.cells_count, T, self.d)
+        competed = torch.einsum('bctd, ck -> bktd', sync_view, self.inhibit)
+        x = x + torch.tanh(competed).reshape(B * self.cells_count, T, self.d)
+        
+        p = self.phases.view(1, self.cells_count, 1, 1)
+        a = self.ambition.view(1, self.cells_count, 1, 1)
+        pulse = torch.sin(x.view(B, self.cells_count, T, self.d) * a + p)
+        return x + pulse.reshape(B * self.cells_count, T, self.d) * 0.02
+
+class TakeoverModel(nn.Module):
+    def __init__(self, mode, d, cells_count=1):
         super().__init__()
-        self.ln1 = nn.LayerNorm(d)
-        self.attn = ManifoldAttention(d)
-        self.ln2 = nn.LayerNorm(d)
-        self.w_gate = nn.Linear(d, 4*d, bias=False) 
-        self.w_flow = nn.Linear(d, 4*d, bias=False)
-        self.reduce = nn.Linear(4*d, d, bias=False)
-
-    def forward(self, x, mask):
-        x = x + self.attn(self.ln1(x), mask)
-        nx = self.ln2(x)
-        # Gated Interaction
-        x = x + self.reduce(F.relu(self.w_gate(nx)) * self.w_flow(nx))
-        return x
-
-class StandardBlock(nn.Module):
-    """The 'Static Filter' Baseline."""
-    def __init__(self, d):
-        super().__init__()
-        self.ln1 = nn.LayerNorm(d)
-        self.mha = nn.MultiheadAttention(d, 8, batch_first=True)
-        self.ln2 = nn.LayerNorm(d)
-        self.ffn = nn.Sequential(
-            nn.Linear(d, 6*d), 
-            nn.ReLU(),
-            nn.Linear(6*d, d)
-        )
-    def forward(self, x, mask):
-        T = x.size(1)
-        nx = self.ln1(x)
-        curr_mask = (1 - mask[:T, :T]).bool()
-        attn_out, _ = self.mha(nx, nx, nx, attn_mask=curr_mask, need_weights=False)
-        x = x + attn_out
-        x = x + self.ffn(self.ln2(x))
-        return x
-
-# ================== Unified Architecture ==================
-
-class UnifiedTransformer(nn.Module):
-    def __init__(self, vocab, d, mode, layers):
-        super().__init__()
-        self.embed = nn.Embedding(vocab, d)
-        self.pos_emb = nn.Parameter(torch.zeros(1, seq_len, d))
-        Block = GeometricBlock if mode == "Geometric" else StandardBlock
-        self.blocks = nn.ModuleList([Block(d) for _ in range(layers)])
+        self.mode, self.d, self.cells_count = mode, d, cells_count
+        if mode == "GEO":
+            self.embed = nn.Embedding(vocab_size, d * cells_count)
+            self.manifold = ResonantManifold(d, cells_count)
+            self.gate = nn.Parameter(torch.randn(d, d) * 0.02)
+            self.prototype = nn.Parameter(torch.randn(cells_count, d))
+        else:
+            self.embed = nn.Embedding(vocab_size, d)
+            self.blocks = nn.ModuleList([
+                nn.TransformerEncoderLayer(d, nhead=4, dim_feedforward=d*4, batch_first=True, norm_first=True) 
+                for _ in range(4)
+            ])
         self.ln_f = nn.LayerNorm(d)
-        self.head = nn.Linear(d, vocab, bias=False)
+        self.head = nn.Linear(d, vocab_size, bias=False)
         self.register_buffer("mask", torch.tril(torch.ones(seq_len, seq_len)))
 
     def forward(self, x):
-        T = x.size(1)
-        x = self.embed(x) + self.pos_emb[:, :T, :]
-        for block in self.blocks:
-            x = block(x, self.mask)
-        return self.head(self.ln_f(x))
-
-def main():
-    try:
-        geo = UnifiedTransformer(vocab_size, args.dim, "Geometric", args.layers).to(device)
-        std = UnifiedTransformer(vocab_size, args.dim, "Standard", args.layers).to(device)
-    except RuntimeError as e:
-        print(f"OOM Error: Your PC can't handle {args.layers} layers. Try a smaller number.")
-        exit()
-    
-    print(f"--- DEEP STRESS TEST: {args.layers} LAYERS ---")
-    print(f"GEO Params: {sum(p.numel() for p in geo.parameters()):,}")
-    print(f"STD Params: {sum(p.numel() for p in std.parameters()):,}")
-
-    opt_geo = torch.optim.AdamW(geo.parameters(), lr=1e-3)
-    opt_std = torch.optim.AdamW(std.parameters(), lr=1e-3)
-
-    if os.path.exists("geo.pt"): geo.load_state_dict(torch.load("geo.pt", map_location=device))
-    if os.path.exists("std.pt"): std.load_state_dict(torch.load("std.pt", map_location=device))
-
-    step = 0
-    def train():
-        nonlocal step
-        while True:
-            x, y = get_batch()
-            for m, o in [(geo, opt_geo), (std, opt_std)]:
-                o.zero_grad(set_to_none=True)
-                loss = F.cross_entropy(m(x).view(-1, vocab_size), y.view(-1))
-                loss.backward(); o.step()
-                if m == geo: lg = loss.item()
-                else: ls = loss.item()
-
-            step += 1
-            if step % args.steps == 0:
-                print(f"STEP {step} | Winner: {'GEO' if lg < ls else 'STD'}")
-                print(f"  GEO PPL {math.exp(min(lg,20)):.2f} | {generate(geo, args.prompt)}")
-                print(f"  STD PPL {math.exp(min(ls,20)):.2f} | {generate(std, args.prompt)}")
-                torch.save(geo.state_dict(), "geo.pt"); torch.save(std.state_dict(), "std.pt")
-
-    try: train()
-    except KeyboardInterrupt:
-        while True:
-            cmd = input("\n[c]ontinue | [q]uit | [e]val | [r]eset > ").lower().strip()
-            if cmd == 'c':
-                try: train()
-                except KeyboardInterrupt: continue
-            elif cmd == 'e':
-                print(f"GEO Output: {generate(geo, args.prompt, 100)}")
-                print(f"STD Output: {generate(std, args.prompt, 100)}")
-            elif cmd == 'r':
-                for f in ["geo.pt", "std.pt"]:
-                    if os.path.exists(f): os.remove(f)
-                print("Reset done."); exit()
-            elif cmd == 'q': exit()
+        B, T = x.shape
+        mask_bool = (1 - self.mask[:T, :T]).bool()
+        if self.mode == "GEO":
+            cells = self.embed(x).view(B, T, self.cells_count, self.d)
+            out = cells.transpose(1, 2).reshape(B * self.cells_count, T, self.d)
+            out = self.manifold(out, mask_bool, self.gate, B, T)
+            final_cells = out.view(B, self.cells_count, T, self.d)
+            sim = torch.einsum('bctd, cd -> bct', F.normalize(final_cells, dim=-1), F.normalize(self.prototype, dim=-1))
+            resonance_weights = F.softmax(sim * 4.0, dim=1) 
+            out = torch.einsum('bct, bctd -> btd', resonance_weights, final_cells)
+            return self.head(self.ln_f(out)), resonance_weights
+        else:
+            out = self.embed(x)
+            src_mask = nn.Transformer.generate_square_subsequent_mask(T).to(device)
+            for b in self.blocks: out = b(out, src_mask=src_mask, is_causal=True)
+            return self.head(self.ln_f(out)), None
 
 @torch.no_grad()
-def generate(model, prompt, length=30):
+def predict(model, prompt, length=15):
     model.eval()
-    idx = [stoi[c] for c in prompt if c in stoi] or [0]
-    idx = torch.tensor(idx, device=device).unsqueeze(0)
+    idx = torch.tensor([stoi.get(c, 0) for c in prompt], device=device).unsqueeze(0)
     for _ in range(length):
-        logits = model(idx[:, -seq_len:])[:, -1, :]
-        nxt = torch.multinomial(F.softmax(logits/0.8, dim=-1), 1)
+        logits, _ = model(idx[:, -seq_len:])
+        nxt = torch.multinomial(F.softmax(logits[:, -1, :]/1.0, dim=-1), 1)
         idx = torch.cat([idx, nxt], dim=1)
     model.train()
     return "".join(itos[i.item()] for i in idx[0]).replace("\n", " ")
+
+def main():
+    geo = TakeoverModel("GEO", d=64, cells_count=args.cells).to(device)
+    std = TakeoverModel("STD", d=64).to(device)
+    step, g_total, s_total = 0, 0, 0
+    
+    if os.path.exists("geo_brain.pt"):
+        geo.load_state_dict(torch.load("geo_brain.pt", map_location=device))
+        std.load_state_dict(torch.load("std_brain.pt", map_location=device))
+        if os.path.exists("stats.pt"):
+            stats = torch.load("stats.pt")
+            step, g_total, s_total = stats['step'], stats.get('g_total', 0), stats.get('s_total', 0)
+
+    opt_g = torch.optim.AdamW(geo.parameters(), lr=1e-3)
+    opt_s = torch.optim.AdamW(std.parameters(), lr=4e-4)
+
+    while True:
+        try:
+            x, y = get_batch()
+            
+            t0 = time.time()
+            opt_g.zero_grad(); g_logits, g_weights = geo(x)
+            gl = F.cross_entropy(g_logits.view(-1, vocab_size), y.view(-1))
+            gl.backward(); opt_g.step()
+            t_geo = (time.time() - t0) * 1000
+
+            t0 = time.time()
+            opt_s.zero_grad(); s_logits, _ = std(x)
+            sl = F.cross_entropy(s_logits.view(-1, vocab_size), y.view(-1))
+            sl.backward(); opt_s.step()
+            t_std = (time.time() - t0) * 1000
+
+            step += 1
+            ge, se = calculate_entropy(g_logits), calculate_entropy(s_logits)
+            round_winner = "GEO" if ge < se else "STD"
+            if round_winner == "GEO": g_total += 1
+            else: s_total += 1
+
+            if step % args.steps == 0:
+                mem = process.memory_info().rss / 1024**2 if HAS_PSUTIL else 0
+                win_rate = (g_total / (g_total + s_total)) * 100
+                efficiency = (1.0 / (ge.item() * t_geo)) * 1000 # Higher is better
+
+                print(f"\n[STEP {step:05d}] WIN RATE: {win_rate:.1f}% | SCORE: {g_total}-{s_total}")
+                print(f"EFFICIENCY SCORE: {efficiency:.2f} (PhD Benchmark > 1.0)")
+                print(f"GEO | {t_geo:>6.1f}ms | Loss: {gl.item():.4f} | Ent: {ge.item():.3f}")
+                print(f"STD | {t_std:>6.1f}ms | Loss: {sl.item():.4f} | Ent: {se.item():.3f}")
+                print(f"GEO PRED: {predict(geo, args.prompt)}")
+                print(f"STD PRED: {predict(std, args.prompt)}")
+                print("-" * 55)
+                
+        except KeyboardInterrupt:
+            cmd = input("\n[trcl-c]ontinue | [q]uit | [e]val | [r]eset | [s]ave > ").lower()
+            if 'q' in cmd: sys.exit()
+            if 's' in cmd: 
+                torch.save(geo.state_dict(), "geo_brain.pt")
+                torch.save(std.state_dict(), "std_brain.pt")
+                torch.save({'step': step, 'g_total': g_total, 's_total': s_total}, "stats.pt")
+            if 'e' in cmd:
+                print(f"\nGEO: {predict(geo, args.prompt, 100)}\nSTD: {predict(std, args.prompt, 100)}")
+            if 'r' in cmd:
+                for f in ["geo_brain.pt", "std_brain.pt", "stats.pt"]:
+                    if os.path.exists(f): os.remove(f)
+                return main()
 
 if __name__ == "__main__":
     main()
