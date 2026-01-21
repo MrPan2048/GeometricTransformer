@@ -4,7 +4,7 @@
 
 Based on the recent training logs, the **SGR (Sovereign)** architecture has reached a critical performance threshold compared to the **STD (Standard)** baseline.
 
-* **Computational Efficiency**: SGR is consistently **~3x faster** on CPU (55ms vs 150--$40ms). The STD spike at Step 21000 (243.7ms) demonstrates the quadratic scaling bottleneck of Attention on CPU, while the SGR **Convolutional Manifold** maintains linear stability.
+* **Computational Efficiency**: SGR is consistently **~3x faster** on CPU (55ms vs 150--$240ms). The STD spike at Step 21000 (243.7ms) demonstrates the quadratic scaling bottleneck of Attention on CPU, while the SGR **Convolutional Manifold** maintains linear stability.
 * **Performance & Entropy**: While the Loss is nearly matched (approx. $1.41$), SGR exhibits lower **Entropy (Ent)**. This indicates the model is more "confident" in its high-dimensional mapping of the *Hongloumeng* style.
 * **Linguistic Coherence**: SGR's prediction quality has evolved from noise to structured prose (e.g., `黛玉見寶釵恩來` — *Daiyu sees Baochai coming*), suggesting that spatial width can effectively substitute for layer depth in pattern recognition.
 
