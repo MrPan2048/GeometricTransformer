@@ -50,4 +50,4 @@
 ### 🏆 The Result
 The **SGR (Sovereign)** model is currently winning on speed and hardware efficiency. It proves that for byte-level logic, a **wide, parallel spatial map** can outperform a **deep, sequential stack** while using significantly fewer computational resources.
 
-[Results](https://github.com/MrPan2048/GeometricTransformer/blob/main/bytefight.md)
+[Results](https://github.com/MrPan2048/GeometricTransformer/blob/main/Bytefight.md)
