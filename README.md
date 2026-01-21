@@ -1,3 +1,35 @@
+## ⚔️ Takeover Battle: Baseline Summary
+
+**The Experiment:** A competition between **Hierarchical Depth** and **Parallel Resonance**.
+
+### 1. STD (Standard Transformer)
+* **Strategy**: **Deep Logic**.
+* **Structure**: A 9-layer vertical stack of Transformer blocks.
+* **Mechanism**: Relies on sequential Self-Attention to "reason" through text patterns.
+* **Trade-off**: High computational cost on CPU due to layer depth ($O(L \cdot N^2)$).
+
+### 2. GEO (Geometric Manifold)
+* **Strategy**: **Broad Resonance**.
+* **Structure**: A single-layer manifold with 6 parallel competitive cells.
+* **Mechanism**: 
+  * **Bio-Pulse**: Uses Sine-wave activations (`torch.sin`) to mimic neural firing.
+  * **Inhibition**: Parallel cells compete via an inhibition matrix to reduce redundancy.
+  * **Prototypes**: High-dimensional similarity routing instead of fixed sequential paths.
+* **Trade-off**: Extremely fast; replaces serial depth with spatial width and rhythmic "rhythm" detection.
+
+### 📊 Structural Comparison
+
+| Feature | STD (Standard) | GEO (Geometric) |
+| :--- | :--- | :--- |
+| **Philosophy** | Deep Sequential | Broad Parallel |
+| **Logic** | Self-Attention | Competitive Resonance |
+| **Activation** | GELU (Standard) | Sine-Pulse (Bio-inspired) |
+| **CPU Speed** | Slower (Serial) | **Faster (Parallel)** |
+
+
+
+**Goal:** Determine if a broad, competitive manifold can achieve a lower loss than a traditional deep stack by treating language as a resonant rhythm rather than a logical sequence.
+
 ## The SGR Manifold: Surpassing Transformer Efficiency via Singular Geometric Strikes
 
 [Results](https://github.com/MrPan2048/GeometricTransformer/blob/main/Baseline.md)
