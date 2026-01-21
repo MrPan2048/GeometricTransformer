@@ -30,8 +30,6 @@
 
 **Goal:** Determine if a broad, competitive manifold can achieve a lower loss than a traditional deep stack by treating language as a resonant rhythm rather than a logical sequence.
 
-## The SGR Manifold: Surpassing Transformer Efficiency via Singular Geometric Strikes
-
 [Results](https://github.com/MrPan2048/GeometricTransformer/blob/main/Baseline.md)
 
 
