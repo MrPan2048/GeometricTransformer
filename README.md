@@ -1,4 +1,4 @@
-# Singular Geometric Resonance (SGR)
+# The SGR Manifold: Surpassing Transformer Efficiency via Singular Geometric Strikes
 **Author:** Mr. Pan  
 **GitHub:** [github.com/MrPan2048/GeometricTransformer](https://github.com/MrPan2048/GeometricTransformer)  
 **Scientific Foundation:** [Zenodo Record 18285921](https://zenodo.org/records/18285921)
@@ -22,9 +22,8 @@ Mr. Pan's SGR model proves that **intelligence is a function of geometry, not de
 ## 📊 Empirical Evidence
 Benchmarks conducted on the *Hong Lou Meng* corpus demonstrate that the GEO Manifold achieves higher predictive certainty with significantly less compute.
 
-| Metric | Transformer (Baseline) | GEO Manifold (Mr. Pan) |
+| Metric | Transformer (Baseline) | GEO Manifold  |
 | :--- | :--- | :--- |
-| **Relative IQ Score** | 100.0 | **155.0+** |
 | **Predictive Entropy (H)** | 5.91 | **3.92 (High Confidence)** |
 | **Latency (ms)** | 22.1 | **12.4 (40% Faster)** |
 | **System Efficiency (SER)** | 0.08 | **0.19 (2.4x Gain)** |
