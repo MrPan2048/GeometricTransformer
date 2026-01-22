@@ -106,3 +106,8 @@ STD LONG: 黛玉玉寶玉寶玉道：玉镏：“說
 -----------------------------------------------------------------
 
 ```
+
+## 4. Seeking arXiv Endorsement
+I am currently seeking an endorsement for submission to arXiv (category cs.LG - Machine Learning). The results prove that structured "Living Cells" with geometric routing are significantly more efficient than standard attention mechanisms in low-parameter regimes.
+
+If you are a researcher in Machine Learning/NLP and are willing to endorse this work, please reach out via Hacker News or open an Issue in this repository.
