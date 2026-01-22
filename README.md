@@ -1,10 +1,5 @@
-### ⚖️ The Efficiency of Explicit Width: 36 vs $2^n$
-
-While the **Ensemble Hypothesis** suggests that a 9-layer Transformer creates $2^9$ (512) implicit paths, our research shows that **quantity is not quality**.
-
-* **The Redundancy Tax**: Deep residual networks often suffer from path-overlap, where multiple layers compute redundant features.
-* **The Sovereign Solution**: Our 36-cell manifold utilizes **Lateral Inhibition**. This forces the 36 experts to remain mathematically orthogonal (unique). 
-* **The Result**: 36 "Strong Experts" outperform 512 "Weak Paths." We achieve competitive loss with a massive reduction in "ghost-path" computation, leading to our 3x speed advantage on CPU hardware.
+### ⚖️ seeking an endorsement to publish a formal paper on this architecture
+I am seeking an endorsement to publish a formal paper on this architecture to arXiv (CS.ML). I believe these results demonstrate that "Living Cell" resonance models can outperform Attention in parameter-constrained and latency-sensitive environments. If you are a researcher willing to endorse or review the mathematical formalization, please contact me via GitHub.
 
 ## ⚔️ Takeover Battle: Baseline Summary
 
