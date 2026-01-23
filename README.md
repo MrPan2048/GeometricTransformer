@@ -1,5 +1,3 @@
-### ⚖️ seeking an endorsement to publish a formal paper on this architecture
-I am seeking an endorsement to publish a formal paper on this architecture to arXiv (CS.ML). I believe these results demonstrate that "Living Cell" resonance models can outperform Attention in parameter-constrained and latency-sensitive environments. If you are a researcher willing to endorse or review the mathematical formalization, please contact me via GitHub.
 
 ## ⚔️ Takeover Battle: Baseline Summary
 
