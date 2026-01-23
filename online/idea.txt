@@ -1,0 +1,9 @@
+1. Rephrasing Our Architecture
+The Environment We have a global "Space" defined by a dimensionality of 256. Within this space, we maintain a population of Cells. To prevent "crowding" (interference), the number of cells is capped based on the space's capacity.
+
+The Input (Embeddings) We manage a library of 256 embeddings, each having a small feature vector of size 8. These embeddings serve as the input "signals" to our space.
+
+The Mapping (Projection) When we read an embedding, it activates a sparse set of the space—specifically, it projects onto a maximum of 8 cells. We allow multiple embeddings to "overlap" by sharing the same cells.
+
+The Dynamics (Movement & Loss) Our system is active rather than static. Each cell is linked to a neighborhood of up to 36 other cells. Cells use these links to navigate or influence their neighbors. Finally, we calculate a loss function to evaluate the state of the space or the accuracy of the projections.
+
