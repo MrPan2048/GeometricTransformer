@@ -11,10 +11,10 @@ device      = 'cpu'
 seq_len     = 128   
 batch_size  = 12    
 d_model     = 512   
-save_path   = "simulative_world_brain.pt"
+save_path   = "curious_basal_brain.pt"
 PROBE_INTERVAL = 25  
 MEM_SIZE    = 512   
-SIM_STEPS   = 3  # How many 'imagined' steps per real token
+SIM_STEPS   = 4     
 # ============================================
 
 def get_sys_info():
@@ -29,79 +29,72 @@ track_len = len(data) // batch_size
 TOTAL_WINDOWS = (track_len - 1) // seq_len
 
 # ----------------------------------------------------------------
-# 1. CORE BRAIN COMPONENTS
+# 1. COMPONENTS
 # ----------------------------------------------------------------
 
-class SimulativeHippocampus(nn.Module):
+class EvaluativeHippocampus(nn.Module):
     def __init__(self, d, mem_size=512):
         super().__init__()
         self.register_buffer("memory_bank", torch.zeros(mem_size, d))
         self.ptr = 0
         self.query_gen = nn.Linear(d, d)
-        self.gate = nn.Sequential(nn.Linear(d, d//4), nn.ReLU(), nn.Linear(d//4, 1), nn.Sigmoid())
 
-    def forward(self, x):
+    def forward(self, x, value_weight):
         B, T, D = x.shape
         q = self.query_gen(x)
         attn = torch.matmul(q, self.memory_bank.t()) / math.sqrt(D)
         m = torch.matmul(F.softmax(attn, dim=-1), self.memory_bank)
-        g = self.gate(x)
-        return m * g, g
+        return m * torch.sigmoid(value_weight)
 
-    def commit(self, thought):
+    def commit(self, thought, value):
+        """Fixed Slicing for Shape Mismatch"""
         with torch.no_grad():
-            self.memory_bank[self.ptr].copy_(thought.detach())
-            self.ptr = (self.ptr + 1) % self.memory_bank.size(0)
+            if value.mean() > 0.4: # Salience threshold
+                # thought is expected to be [512] here
+                self.memory_bank[self.ptr].copy_(thought.detach())
+                self.ptr = (self.ptr + 1) % self.memory_bank.size(0)
 
-class GatedAxon(nn.Module):
-    """Mimics the Prefrontal Cortex: Complex integration via gating"""
-    def __init__(self, d_in, d_out):
-        super().__init__()
-        self.gate = nn.Linear(d_in, d_out)
-        self.val  = nn.Linear(d_in, d_out)
-        self.norm = nn.LayerNorm(d_out)
-
-    def forward(self, x):
-        # Gated Linear Unit (GLU) variant
-        return self.norm(torch.sigmoid(self.gate(x)) * torch.tanh(self.val(x)))
-
-class SimBrain(nn.Module):
+class BasalBrain(nn.Module):
     def __init__(self, d=512):
         super().__init__()
         self.soma = nn.Embedding(256, d)
         self.fast = nn.GRU(d, d, batch_first=True)
-        self.hippo = SimulativeHippocampus(d, MEM_SIZE)
+        self.hippo = EvaluativeHippocampus(d, MEM_SIZE)
         
-        # Internal Simulation / World Model
-        self.transition = nn.Sequential(
-            nn.Linear(d, d),
-            nn.LayerNorm(d),
-            nn.ELU()
-        )
+        self.transition = nn.Sequential(nn.Linear(d, d), nn.ELU(), nn.LayerNorm(d))
+        self.value_head = nn.Linear(d, 1) 
         
-        self.pfc = GatedAxon(d * 3, d) # Fast + Hippo + Sim
+        self.pfc = nn.Sequential(nn.Linear(d * 3, d), nn.LayerNorm(d), nn.GELU())
         self.gain = 16.0
 
     def forward(self, x, h_f):
         emb = self.soma(x)
         p_f, h_f = self.fast(emb, h_f)
         
-        # 1. Start with the 'Now'
-        state = p_f
+        sim_states = []
+        sim_values = []
+        curr_state = p_f
         
-        # 2. SIMULATION: Iterate through the hidden state internally
-        # This allows the brain to "think ahead"
         for _ in range(SIM_STEPS):
-            state = self.transition(state)
+            curr_state = self.transition(curr_state)
+            # Value = Learned Value + Curiosity (State Variance)
+            val = self.value_head(curr_state)
+            sim_states.append(curr_state)
+            sim_values.append(val)
             
-        # 3. Memory Retrieval based on simulated future
-        episodes, g_str = self.hippo(state)
+        all_sims = torch.stack(sim_states, dim=1) 
+        all_vals = torch.stack(sim_values, dim=1) 
         
-        # 4. Integrate Real, Simulated, and Episodic
-        thought = self.pfc(torch.cat([p_f, state, episodes], dim=-1))
+        sim_weights = F.softmax(all_vals, dim=1)
+        best_imagination = (all_sims * sim_weights).sum(dim=1)
+        mean_value = all_vals.mean(dim=1)
+        
+        episodes = self.hippo(best_imagination, mean_value)
+        combined = torch.cat([p_f, best_imagination, episodes], dim=-1)
+        thought = self.pfc(combined)
         
         logits = (thought @ F.normalize(self.soma.weight, dim=-1).t()) * self.gain
-        return logits, thought, h_f, g_str
+        return logits, thought, h_f, mean_value
 
 # ----------------------------------------------------------------
 
@@ -114,7 +107,8 @@ def dream(model, h_f, prompt="黛玉", length=60):
     cf = h_f[:, :1, :].contiguous()
     for _ in range(length):
         logits, _, cf, _ = model(idx[:, -1:], cf)
-        nxt = torch.multinomial(F.softmax(logits[:, -1, :]/0.8, dim=-1), 1).item()
+        probs = F.softmax(logits.view(-1, 256) / 0.8, dim=-1)
+        nxt = torch.multinomial(probs, 1).item()
         res.append(nxt)
         idx = torch.tensor([[nxt]])
     model.train()
@@ -123,7 +117,7 @@ def dream(model, h_f, prompt="黛玉", length=60):
 def train_loop(brain, opt, h_f, start_s, passes):
     last_p = time.time()
     offsets = torch.arange(batch_size) * track_len
-    print(f"\n--- [SIMULATIVE WORLD PASS {passes}] ---")
+    print(f"\n--- [CURIOSITY-DRIVEN BASAL PASS {passes}] ---")
     try:
         for s in range(start_s, TOTAL_WINDOWS):
             indices = offsets.unsqueeze(1) + torch.arange(seq_len + 1) + (s * seq_len)
@@ -131,37 +125,32 @@ def train_loop(brain, opt, h_f, start_s, passes):
             x, y = batch[:, :-1], batch[:, 1:]
             
             h_f.detach_()
-            logits, thought, h_f, g_str = brain(x, h_f)
+            logits, thought, h_f, v_mean = brain(x, h_f)
             
-            loss_map = F.cross_entropy(logits.reshape(-1, 256), y.reshape(-1), reduction='none').view(batch_size, seq_len)
-            loss = loss_map.mean()
+            loss = F.cross_entropy(logits.reshape(-1, 256), y.reshape(-1))
 
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(brain.parameters(), 1.0)
             opt.step()
             
-            # Commit to Hippo on High Saliency (High Loss)
+            # Commit with fixed slicing: thought[0, -1] is shape [512]
             if s % 10 == 0:
-                with torch.no_grad():
-                    mask = loss_map > 4.2
-                    if mask.any():
-                        b, t = torch.where(mask)
-                        brain.hippo.commit(thought[b[0], t[0]])
+                brain.hippo.commit(thought[0, -1], v_mean[0, -1])
 
             if time.time() - last_p > PROBE_INTERVAL:
-                print(f"\n\n[PROBE | L:{loss:.3f} | Hippo Gate:{g_str.mean().item():.3f}]")
+                print(f"\n\n[PROBE | L:{loss:.3f} | V:{v_mean.mean().item():.3f}]")
                 print(f"DREAM: {dream(brain, h_f)}")
                 last_p = time.time()
 
             if s % 2 == 0:
-                sys.stdout.write(f"\rStep {s}/{TOTAL_WINDOWS} | Loss: {loss:.4f} | RAM: {get_sys_info():.1f}MB")
+                sys.stdout.write(f"\rStep {s}/{TOTAL_WINDOWS} | Loss: {loss:.4f} | V:{v_mean.mean().item():.2f}")
                 sys.stdout.flush()
         return 0, h_f, passes + 1
     except KeyboardInterrupt: return s, h_f, passes
 
 def main():
-    brain = SimBrain()
+    brain = BasalBrain()
     opt = torch.optim.AdamW(brain.parameters(), lr=1e-3)
     h_f = torch.zeros(1, batch_size, 512)
     s, p = 0, 1
@@ -170,7 +159,7 @@ def main():
         brain.load_state_dict(ck['m'], strict=False)
         if ck['hf'].shape[1] == batch_size: h_f = ck['hf']
         s, p = ck['s'], ck['p']
-        print(f"[*] Resumed. Simulative transition active.")
+        print(f"[*] Resumed. Slicing fixed.")
 
     while True:
         print(f"\n\n[trcl-c/t] Train | [q] Quit | [e] Reset | [r] Probe")
