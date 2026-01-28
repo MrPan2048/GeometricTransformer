@@ -42,12 +42,12 @@ PLASTICITY_SENSITIVITY = 1.50  # Sensitivity to surprise
 LR_MIN_MULT        = 1.0       
 LR_MAX_MULT        = 8.0       
 WISDOM_STIFFNESS   = 0.05    
-SATORI_MAX_GATE    = 0.001    
-SNAP_COEFF         = 150.0     
-HARDENING_RATE     = 10.0     
-SALIENCE_DECAY     = 0.9995   
-HARDNESS_STABILITY = 0.0001 
-WISDOM_THRESHOLD   = 0.000001
+SATORI_MAX_GATE    = 0.1    
+SNAP_COEFF         = 0.1    
+HARDENING_RATE     = 0.005     
+SALIENCE_DECAY     = 0.99   
+HARDNESS_STABILITY = 0.1 
+WISDOM_THRESHOLD   = 0.05
 
 # --- Math & Physics Baselines ---
 INIT_SCALE         = 0.02
@@ -90,10 +90,8 @@ class ShadowSystem(nn.Module):
         out, self.h = self.gru(e, self.h)
         out = self.norm(out)
         
-        # PFC Fusion (matching Zen's PFC logic)
-        h_rep = self.h[-1].unsqueeze(1).expand(-1, out.size(1), -1)
-        fused = torch.cat([out, h_rep], dim=-1)
-        logits = self.out(torch.tanh(self.pfc(fused)))
+        logits = self.out(out)  # no fusion with h_rep
+
         
         loss = F.cross_entropy(logits.view(-1, self.emb_size), y.view(-1))
         
@@ -262,27 +260,31 @@ class ThinkingEngine:
 class RelationalMemory(nn.Module):
     def __init__(self, size, d):
         super().__init__()
-        self.keys = nn.Parameter(torch.randn(size, d) * INIT_SCALE)
-        self.vals = nn.Parameter(torch.randn(size, d) * INIT_SCALE)
-        self.register_buffer("salience", torch.zeros(size))
+        self.size = size
+        self.register_buffer("keys", torch.randn(size, d) * 0.02)
+        self.register_buffer("vals", torch.randn(size, d) * 0.02)
         self.register_buffer("hardness", torch.zeros(size))
-        
+        self.register_buffer("salience", torch.zeros(size))
+        self.register_buffer("usage_trace", torch.zeros(size))
 
     def recall(self, latent):
         query = F.normalize(latent, dim=-1)
         keys = F.normalize(self.keys, dim=-1)
-    
-        # Add temperature (0.1) to make the best match stand out
+        # Use hardness as a gate for how much this memory 'speaks'
         scores = (torch.matmul(query, keys.t()) * self.hardness) 
         attn = F.softmax(scores / 0.1, dim=-1)
-        
-        # Noise Gate: Only listen to memories with > 1% confidence
-        attn = attn * (attn > 0.01).float() 
+        if self.training:
+            self.usage_trace.add_(attn.detach().sum(dim=(0, 1)))
         return torch.matmul(attn, self.vals)
 
+    def merit_update(self, dopamine_signal):
+        reward_scale = (dopamine_signal - 1.0) * 0.05
+        self.hardness.copy_(torch.clamp(self.hardness + (self.usage_trace * reward_scale), 0.0, 1.0))
+        self.usage_trace.zero_()
+
     def ltp_update(self, pattern, coherence, snap_coeff, max_snap):
+        # Pick memories that are low salience or low hardness to overwrite
         scores = self.salience - (self.hardness * 2.0) 
-        # Pick from the bottom 5 worst memories randomly to spread the knowledge
         _, indices = torch.topk(scores, k=5, largest=False)
         idx = indices[random.randint(0, 4)]
         
@@ -293,41 +295,40 @@ class RelationalMemory(nn.Module):
         self.vals[idx].data.lerp_(pattern.detach().squeeze(), snap)
         
         self.salience[idx] = coherence
-        # Force the update to stay within 0.0 and 1.0
-        delta = (coherence + 0.1) * HARDENING_RATE * (1.0 - self.hardness[idx])
-        self.hardness[idx] = torch.clamp(self.hardness[idx] + delta, 0.0, 1.0)
         
-    def consolidate(self, similarity_threshold=0.92):
-        print("consolidate.....\n")
+        # FIXED: Indentation corrected here
+        delta = coherence * HARDENING_RATE * (1.0 - resistance)
+        self.hardness[idx] += delta
+        
+    def consolidate(self, dopa, similarity_threshold=0.92):
         with torch.no_grad():
-            # 1. Self-Attention: Find memories that are too similar
+            # 1. Standard Redundancy Merge
             norm_keys = F.normalize(self.keys, dim=-1)
             sim_matrix = torch.matmul(norm_keys, norm_keys.t())
-            
-            # Mask diagonal (self-similarity)
             sim_matrix.fill_diagonal_(0)
             
-            # 2. Merge Redundancy: If two memories are nearly the same, 
-            # blend the weaker one into the stronger one
             for i in range(len(self.keys)):
                 matches = (sim_matrix[i] > similarity_threshold).nonzero(as_tuple=True)[0]
                 for j in matches:
                     if self.salience[i] >= self.salience[j]:
-                        # Blend j into i and reset j
-                        self.keys[i] = (self.keys[i] + self.keys[j]) / 2
-                        self.salience[j] *= 0.1 # Mark for deletion
+                        self.keys[i].lerp_(self.keys[j], 0.5)
+                        self.salience[j] *= 0.1 
                         self.hardness[j] *= 0.5
+
+            # 2. PRUNE PETRIFIED NOISE (The fix for 100% Wisdom)
+            # If a memory is 'hard' but has 'low salience', it's just stuck garbage.
+            noise_mask = (self.hardness > 0.7) & (self.salience < 0.15)
+            self.hardness[noise_mask] *= 0.1 # Soften it so it can be overwritten
+            self.salience[noise_mask] *= 0.5
+
+            # 3. Decay and Cleanup 
+            decay_factor = SALIENCE_DECAY + (0.0004 * dopa) 
+            self.salience *= decay_factor
             
-            # 3. Decay: Natural forgetting of low-salience patterns
-            # Only decay things that aren't "Wisdom" yet
-            decay_mask = (self.hardness < 0.5) 
-            self.salience[decay_mask] *= SALIENCE_DECAY
-            
-            # 4. Cleanup: Hardened memories (Wisdom) resist decay
-            # Non-hardened memories that dropped too low are zeroed out
-            mask = (self.salience < 0.05) & (self.hardness < 0.2)
-            self.keys[mask] *= 0.5
-            self.vals[mask] *= 0.5        
+            dead_mask = self.salience < 0.01
+            self.keys[dead_mask].zero_()
+            self.vals[dead_mask].zero_()
+            self.hardness[dead_mask].zero_()
         
 class LearningGovernor:
     def __init__(self, base_lr, momentum, alpha):
@@ -420,7 +421,7 @@ class BasalGanglia(nn.Module):
             signal = intrinsic_value + torch.tanh(advantage) + (thalamus_focus * 0.4)
             
             # 4. Stabilize Dopamine (Zen's 'self-esteem' is now independent)
-            self.dopamine.copy_(0.8 * self.dopamine + 0.2 * torch.clamp(signal, 0.1, 1.8))
+            self.dopamine.copy_(0.8 * self.dopamine + 0.2 * torch.clamp(signal, 0.4, 1.8))
             
         return self.dopamine
 
@@ -579,7 +580,9 @@ def train_loop(brain, opt, h_f, h_mono, s, p, stream, Gov, shadow_sys):
         
         # --- BRAIN STATE & LR ---
         wisdom = (brain.Memory.hardness > WISDOM_THRESHOLD).float().mean().item()
+        dopa_signal = brain.Striatum.dopamine.item() # Get current state
         current_lr = float(Gov.get_lr(wisdom, brain.Striatum.dopamine))
+
         for g in opt.param_groups: g['lr'] = current_lr
         
         # --- ZEN FORWARD/BACKWARD ---
@@ -619,12 +622,25 @@ def train_loop(brain, opt, h_f, h_mono, s, p, stream, Gov, shadow_sys):
         with torch.no_grad():
             avg_gate = sal_seq.mean().item()
             coherence, is_satori = Gov.evaluate(loss_z.item(), wisdom, avg_gate, WISDOM_STIFFNESS)
-            if is_satori:
-                brain.Memory.ltp_update(combined.detach().mean(dim=(0, 1)), coherence, SNAP_COEFF, MAX_SNAP)
             
+            # ... previous code above ...
             brain.Battery.update(t_cost, coherence)
+
+            # 1. Update Dopamine based on performance
             brain.Striatum.update_reward(combined.mean(dim=1), loss_z.item(), avg_gate)
-            if s > 0 and s % 500 == 0: brain.Memory.consolidate()
+    
+            # 2. Long-Term Potentiation (Learning from success)
+            if is_satori:
+                # Capture the pattern from the brain's current state
+                pattern = combined.detach().mean(dim=(0, 1)) 
+                brain.Memory.ltp_update(pattern, coherence, SNAP_COEFF, MAX_SNAP)
+            
+            # 3. Apply Hebbian Merit (Reward/Punish memory usage)
+            brain.Memory.merit_update(dopa_signal)
+            
+            # 4. Periodically clean/merge memories to save PC resources
+            if s > 0 and s % 40 == 0:
+                brain.Memory.consolidate(dopa=dopa_signal)
 
         # --- UI ---
         if s % LOG_INTERVAL == 0:
@@ -637,7 +653,7 @@ def train_loop(brain, opt, h_f, h_mono, s, p, stream, Gov, shadow_sys):
             UI.render_stats(p, s, (s/stream.total_steps)*100, current_lr, loss_z.item(), loss_s_val,
                 zen_time, shadow_time, sum(p.numel() for p in brain.parameters()), 
                 sum(p.numel() for p in shadow_sys.parameters()), energy_level, 
-                steps, wisdom * 100, brain.Striatum.dopamine.item(), avg_gate, 
+                steps, wisdom * 100, dopa_signal, avg_gate, 
                 dream(brain, h_f, h_mono), shadow_sys.probe(PROBE_PROMPT))
 
         s = 0 if s >= stream.total_steps else s + 1
