@@ -17,7 +17,7 @@ Instead of looking back at every previous word (like a Transformer) or squashing
 ## ⚔️ The Competition: Why This Is Better
 
 ### 1. vs. The Transformer (Quadratic vs. Linear)
-* **The Problem:** Transformers use "Self-Attention," which compares every word to every other word ($O(T^2)$). This creates a "Quadratic Trap" where memory and compute requirements explode as sequences grow.
+* **The Problem:** Transformers use "Self-Attention," which compares every word to every other word **$O(T^2)$**. This creates a "Quadratic Trap" where memory and compute requirements explode as sequences grow.
 * **The Solution:** We use a **Parallel Scan** implementation. The complexity is reduced to **$O(T)$**. The model "integrates" the sequence like a fluid, allowing it to handle theoretically infinite sequences with a constant memory footprint per layer.
 
 
