@@ -348,11 +348,11 @@ def create_models():
             ),
             nn.Linear(D_MODEL, 256)
         ),
-        "BASE_RNN  ": BaseRNN(D_MODEL),
-        #"TOY_ATTN  ": TransformerModel(D_MODEL, mixer_type="attention"),
-        #"TOY_GEO   ": TransformerModel(D_MODEL, mixer_type="geometric"),
+        "BASE_RNN": BaseRNN(D_MODEL),
+        #"TOY_ATTN": TransformerModel(D_MODEL, mixer_type="attention"),
+        #"TOY_GEO": TransformerModel(D_MODEL, mixer_type="geometric"),
         #"TOY_GEOABS   ": TransformerModel(D_MODEL, mixer_type="geometricAbstraction"),
-        "TOY_GEOPARA   ": TransformerModel(D_MODEL, mixer_type="geometricParallel")              
+        "TOY_GEOPARA": TransformerModel(D_MODEL, mixer_type="geometricParallel")              
     }
     
     # Initialize optimizers
@@ -460,8 +460,9 @@ def main():
                 print(f"\n[PREDICTION AT STEP {step}]")
                 # We show the prediction for GEOABS because it is currently your best 'Toy'
                 # and for BASE_RNN to see the gap.
-                print(f"RNN    : {predict(models['BASE_RNN  '])}")
-                print(f"GEOPARA : {predict(models['TOY_GEOPARA   '])}")
+                print(f"TRANS  : {predict(models['BASE_TRANS'])}")
+                print(f"RNN    : {predict(models['BASE_RNN'])}")
+                print(f"GEOPARA : {predict(models['TOY_GEOPARA'])}")
                 print("-" * 50 + "\n")
             if step % 100 == 0: print("\n")
             if step % 500 == 0:
